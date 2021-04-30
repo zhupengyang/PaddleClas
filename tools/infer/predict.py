@@ -47,11 +47,16 @@ class Predictor(object):
         return batch_output
 
     def normal_predict(self):
+        images_num = 0
         if self.args.enable_calc_topk:
             assert self.args.gt_label_path is not None and os.path.exists(self.args.gt_label_path), \
                 "gt_label_path shoule not be None and must exist, please check its path."
             image_list, gt_labels = get_image_list_from_label_file(
                 self.args.image_file, self.args.gt_label_path)
+            xpu_device_id = self.args.xpu_device_id
+            images_num = int(len(image_list) / self.args.all_xpu_device)
+            image_list = image_list[xpu_device_id * images_num : (xpu_device_id + 1) * images_num]
+            gt_labels = gt_labels[xpu_device_id * images_num : (xpu_device_id + 1) * images_num]
             predicts_map = {
                 "prediction": [],
                 "gt_label": [],
@@ -63,6 +68,7 @@ class Predictor(object):
         batch_input_list = []
         img_name_list = []
         cnt = 0
+        all_time = 0.
         for idx, img_path in enumerate(image_list):
             img = cv2.imread(img_path)
             if img is None:
@@ -81,28 +87,51 @@ class Predictor(object):
                     predicts_map["gt_label"].append(gt_labels[idx])
 
             if cnt % args.batch_size == 0 or (idx + 1) == len(image_list):
+                if cnt / args.batch_size <= 1 or (idx + 1) == len(image_list):
+                    for i in range(self.args.warmup):
+                        batch_outputs = self.predict(np.array(batch_input_list))
+                        print("warmup {}, done".format(i))
+
+                start_time = time.time()
                 batch_outputs = self.predict(np.array(batch_input_list))
+                all_time = all_time + time.time() - start_time
+                avg_time = all_time / cnt
+                print("device {} cost time avg: {} ms/images, throughput: {} images/s".format(self.args.xpu_device_id, avg_time * 1000, 1 / avg_time))
+
                 batch_result_list = postprocess(batch_outputs, self.args.top_k)
 
                 for number, result_dict in enumerate(batch_result_list):
                     filename = img_name_list[number]
                     clas_ids = result_dict["clas_ids"]
-                    scores_str = "[{}]".format(", ".join("{:.2f}".format(
-                        r) for r in result_dict["scores"]))
-                    logger.info(
-                        "File:{}, Top-{} result: class id(s): {}, score(s): {}".
-                        format(filename, self.args.top_k, clas_ids,
-                               scores_str))
+                    # scores_str = "[{}]".format(", ".join("{:.2f}".format(
+                    #     r) for r in result_dict["scores"]))
+                    # logger.info(
+                    #     "File:{}, Top-{} result: class id(s): {}, score(s): {}".
+                    #     format(filename, self.args.top_k, clas_ids,
+                    #            scores_str))
 
                     if self.args.enable_calc_topk:
                         predicts_map["prediction"].append(clas_ids)
 
                 batch_input_list = []
                 img_name_list = []
+
+        avg_time = all_time / cnt
+        out_log = "device {} summary:\n".format(self.args.xpu_device_id) \
+                + "\twarmup: {}\n".format(self.args.warmup) \
+                + "\timages num: {}\n".format(images_num) \
+                + "\taverage: {} ms/batch\n".format(avg_time * 1000) \
+                + "\tthroughput: {} batch/s\n".format(1 / avg_time)
+        print(out_log)
+        np.savetxt(self.args.log_file, np.array(out_log, str), "%s")
+
         if self.args.enable_calc_topk:
             topk_acc = calc_topk_acc(predicts_map)
             for idx, acc in enumerate(topk_acc):
                 logger.info("Top-{} acc: {:.5f}".format(idx + 1, acc))
+                with open(self.args.log_file, "ab") as f:
+                    log_str = "Top-{} acc: {:.5f}".format(idx + 1, acc)
+                    np.savetxt(f, np.array([log_str], str), "%s")
 
     def benchmark_predict(self):
         test_num = 500

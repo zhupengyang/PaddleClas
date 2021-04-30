@@ -30,7 +30,8 @@ def parse_args():
     # general params
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--image_file", type=str)
-    parser.add_argument("--use_gpu", type=str2bool, default=True)
+    parser.add_argument("--use_gpu", type=str2bool, default=False)
+    parser.add_argument("--use_xpu", type=str2bool, default=False)
     parser.add_argument("--multilabel", type=str2bool, default=False)
 
     # params for preprocess
@@ -52,6 +53,10 @@ def parse_args():
     parser.add_argument("--enable_mkldnn", type=str2bool, default=False)
     parser.add_argument("--cpu_num_threads", type=int, default=10)
     parser.add_argument("--hubserving", type=str2bool, default=False)
+    parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument("--xpu_device_id", type=int, default=0)
+    parser.add_argument("--all_xpu_device", type=int, default=2)
+    parser.add_argument("--log_file", type=str, default="log.txt")
 
     # params for infer
     parser.add_argument("--model", type=str)
@@ -88,6 +93,10 @@ def create_paddle_predictor(args):
 
     if args.use_gpu:
         config.enable_use_gpu(args.gpu_mem, 0)
+    elif args.use_xpu:
+        config.disable_gpu()
+        config.enable_lite_engine()
+        config.enable_xpu()
     else:
         config.disable_gpu()
         if args.enable_mkldnn:
